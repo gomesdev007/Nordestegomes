@@ -1,4 +1,3 @@
---[[ Chilli Hub -> WindUI migration. Original logic begins after this UI adapter. ]]
 local WindUI = loadstring(game:HttpGet("https://raw.githubusercontent.com/Footagesus/WindUI/refs/tags/1.6.66/dist/main.lua"))()
 WindUI:AddTheme({Name="Dark",Accent=Color3.fromHex("#18181b"),Background=Color3.fromHex("#101010"),Outline=Color3.fromHex("#FFFFFF"),Text=Color3.fromHex("#FFFFFF"),Placeholder=Color3.fromHex("#7a7a7a"),Button=Color3.fromHex("#52525b"),Icon=Color3.fromHex("#a1a1aa")})
 local Players=game:GetService("Players")
