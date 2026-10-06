@@ -1,0 +1,274 @@
+local Players = game:GetService("Players")
+local ProximityPromptService = game:GetService("ProximityPromptService")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+
+local LocalPlayer = Players.LocalPlayer
+
+local BypassEnabled = true
+local IsTeleporting = false
+local IsTesting = false
+local TestConnection = nil
+local TestHeight = nil
+local LastPromptPosition = nil
+local ExecutePosition = nil
+
+local characterAtStart = LocalPlayer.Character
+if characterAtStart then
+    local rootAtStart = characterAtStart:FindFirstChild("HumanoidRootPart")
+    if rootAtStart then
+        ExecutePosition = rootAtStart.CFrame
+    else
+        ExecutePosition = characterAtStart:GetPivot()
+    end
+end
+
+local TeleportPoints = {
+    Vector3.new(500.62, 241.28, -366.64),
+    Vector3.new(504.45, 155.80, -366.35),
+    Vector3.new(508.30, 70.28, -366.03),
+    Vector3.new(513.86, 70.28, -366.25),
+    Vector3.new(519.43, 70.28, -366.47),
+    Vector3.new(524.32, 70.28, -366.59),
+    Vector3.new(529.22, 70.28, -366.71),
+    Vector3.new(538.01, 70.28, -365.55),
+    Vector3.new(546.80, 70.28, -364.40)
+}
+
+local Bypass = {
+    Active = false,
+    OriginalHumanoid = nil,
+    CloneHumanoid = nil
+}
+
+local PROPS_TO_COPY = {
+    "WalkSpeed","JumpPower","JumpHeight","AutoRotate","HipHeight",
+    "MaxHealth","Health","NameDisplayDistance","HealthDisplayDistance",
+    "DisplayDistanceType","RigType","UseJumpPower","PlatformStand",
+    "Sit","AutoJumpEnabled"
+}
+
+function Bypass.Apply(character)
+    if not BypassEnabled or Bypass.Active or not character or not character.Parent then
+        return false
+    end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return false end
+
+    local clone = humanoid:Clone()
+    clone.Name = humanoid.Name
+    clone.Parent = character
+
+    for _, property in ipairs(PROPS_TO_COPY) do
+        pcall(function()
+            clone[property] = humanoid[property]
+        end)
+    end
+
+    for name, value in pairs(humanoid:GetAttributes()) do
+        pcall(function()
+            clone:SetAttribute(name, value)
+        end)
+    end
+
+    local animator = humanoid:FindFirstChildOfClass("Animator")
+    if animator then animator.Parent = clone end
+
+    Bypass.OriginalHumanoid = humanoid
+    Bypass.CloneHumanoid = clone
+    Bypass.Active = true
+
+    pcall(function()
+        Workspace.CurrentCamera.CameraSubject = clone
+    end)
+
+    humanoid:Destroy()
+    return true
+end
+
+function Bypass.Disable()
+    Bypass.Active = false
+    Bypass.OriginalHumanoid = nil
+    Bypass.CloneHumanoid = nil
+
+    local character = LocalPlayer.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        pcall(function()
+            Workspace.CurrentCamera.CameraSubject = humanoid
+        end)
+    end
+end
+
+-- Scripts invisíveis executados automaticamente
+local function RunInvisibleRemote(url)
+    task.spawn(function()
+        pcall(function()
+            loadstring(game:HttpGet(url))()
+        end)
+    end)
+end
+
+RunInvisibleRemote("https://raw.githubusercontent.com/Lutosys/opensrc/refs/heads/main/stealaeggnoknockback.lua")
+RunInvisibleRemote("https://raw.githubusercontent.com/Lutosys/opensrc/refs/heads/main/stealanegginstantinteract.lua")
+
+local InstantStealPosition = Vector3.new(963, 71, -412)
+
+local InstantStealEnabled = false
+local AutoBugBossEnabled = false
+
+local function ApplyBypass()
+    local character = LocalPlayer.Character
+    if character and BypassEnabled then
+        pcall(function()
+            Bypass.Apply(character)
+        end)
+    end
+end
+
+-- Instant Steal
+local function InstantSteal(character)
+    if IsTeleporting or IsTesting then return end
+    if not character or not character.Parent then return end
+
+    IsTeleporting = true
+    ApplyBypass()
+    character:PivotTo(CFrame.new(InstantStealPosition))
+    task.wait(0.12)
+    IsTeleporting = false
+end
+
+-- Auto Bug Boss
+local function AutoBugBoss(character)
+    if IsTeleporting or IsTesting then return end
+    if not character or not character.Parent then return end
+
+    IsTeleporting = true
+    ApplyBypass()
+
+    for _, position in ipairs(TeleportPoints) do
+        if not character.Parent then break end
+        character:PivotTo(CFrame.new(position))
+        task.wait(0.08)
+    end
+
+    IsTeleporting = false
+end
+
+-- Event Egg Drop
+local function EventEggDrop()
+    if IsTeleporting then return end
+
+    local character = LocalPlayer.Character
+    if not character or not character.Parent then return end
+
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    TestHeight = root.Position.Y + 20
+    IsTesting = true
+
+    if TestConnection then
+        TestConnection:Disconnect()
+        TestConnection = nil
+    end
+
+    TestConnection = RunService.Heartbeat:Connect(function()
+        if not IsTesting then return end
+
+        local currentCharacter = LocalPlayer.Character
+        if not currentCharacter or not currentCharacter.Parent then return end
+
+        local currentRoot = currentCharacter:FindFirstChild("HumanoidRootPart")
+        if not currentRoot or not TestHeight then return end
+
+        local position = currentRoot.Position
+        currentRoot.CFrame = CFrame.new(position.X, TestHeight, position.Z) * CFrame.Angles(
+            currentRoot.CFrame:ToOrientation()
+        )
+
+        currentRoot.AssemblyLinearVelocity = Vector3.new(
+            currentRoot.AssemblyLinearVelocity.X,
+            0,
+            currentRoot.AssemblyLinearVelocity.Z
+        )
+    end)
+end
+
+-- Return to Egg
+local function ReturnToEgg(character)
+    if IsTeleporting or IsTesting then return end
+    if not LastPromptPosition then return end
+    if not character or not character.Parent then return end
+
+    IsTeleporting = true
+    ApplyBypass()
+    character:PivotTo(CFrame.new(LastPromptPosition))
+    task.wait(0.15)
+    IsTeleporting = false
+end
+
+-- Return to Safe
+local function ReturnToSafe(character)
+    if IsTeleporting or IsTesting then return end
+    if not ExecutePosition then return end
+    if not character or not character.Parent then return end
+
+    IsTeleporting = true
+    ApplyBypass()
+    character:PivotTo(ExecutePosition)
+    task.wait(0.15)
+    IsTeleporting = false
+end
+
+-- Trigger automático ao completar prompt
+ProximityPromptService.PromptTriggered:Connect(function(prompt, player)
+    if player and player ~= LocalPlayer then
+        return
+    end
+
+    local character = LocalPlayer.Character
+    if not character or not character.Parent then return end
+
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if root then
+        LastPromptPosition = root.Position
+    else
+        LastPromptPosition = character:GetPivot().Position
+    end
+
+    if IsTeleporting or IsTesting then
+        return
+    end
+
+    if InstantStealEnabled then
+        task.spawn(function()
+            InstantSteal(character)
+        end)
+    elseif AutoBugBossEnabled then
+        task.spawn(function()
+            AutoBugBoss(character)
+        end)
+    end
+end)
+
+-- Bypass automático ao spawnar
+LocalPlayer.CharacterAdded:Connect(function()
+    IsTesting = false
+    if TestConnection then
+        TestConnection:Disconnect()
+        TestConnection = nil
+    end
+
+    Bypass.Disable()
+
+    task.wait(0.5)
+    ApplyBypass()
+end)
+
+-- Ativa bypass no primeiro personagem
+task.defer(function()
+    task.wait(0.5)
+    ApplyBypass()
+end)
