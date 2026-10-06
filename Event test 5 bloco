@@ -1,0 +1,1513 @@
+local Players = game:GetService("Players")
+local ProximityPromptService = game:GetService("ProximityPromptService")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CoreGui = game:GetService("CoreGui")
+local LP = Players.LocalPlayer
+
+local ACCENT = Color3.fromRGB(0, 168, 255)
+local ACCENT2 = Color3.fromRGB(0, 224, 255)
+local BG = Color3.fromRGB(12, 15, 22)
+
+local CFG = {
+    Speed = 400,
+    Method = "Auto",
+}
+
+task.spawn(function()
+    pcall(function()
+        loadstring(game:HttpGet("https://raw.githubusercontent.com/gomesdev007/Nordestegomes/refs/heads/main/Tedt1"))()
+    end)
+end)
+
+local function root()
+    local c = LP.Character
+    return c and c:FindFirstChild("HumanoidRootPart"), c and c:FindFirstChildOfClass("Humanoid"), c
+end
+
+local function grounded(hum)
+    if not hum then return false end
+    if hum.FloorMaterial == Enum.Material.Air then return false end
+    local s = hum:GetState()
+    return s == Enum.HumanoidStateType.Running
+        or s == Enum.HumanoidStateType.RunningNoPhysics
+        or s == Enum.HumanoidStateType.Landed
+end
+
+print("[K]vk - Parte 1 carregada")
+local shieldState = {
+    Active = false,
+    Method = "Humanoid Swap",
+    Original = nil,
+    Clone = nil,
+    Links = {},
+    DisabledConns = {},
+    CanSwap = true,
+    CanDisable = true,
+}
+
+local function restorePlayerControls(hum)
+    pcall(function()
+        local ps = LP:FindFirstChild("PlayerScripts")
+        local pm = ps and ps:FindFirstChild("PlayerModule")
+        if pm then
+            local ok, controls = pcall(function() return require(pm):GetControls() end)
+            if ok and type(controls) == "table" then
+                controls.humanoid = hum
+                if controls.controlsEnabled == false then
+                    pcall(function() controls:Enable() end)
+                end
+            end
+        end
+    end)
+end
+
+local function pulseAnimate(char)
+    pcall(function()
+        local a = char and char:FindFirstChild("Animate")
+        if a and a:IsA("LocalScript") then
+            task.spawn(function()
+                a.Enabled = false
+                task.wait()
+                a.Enabled = true
+            end)
+        end
+    end)
+end
+
+local function clearLinks()
+    for _, c in ipairs(shieldState.Links) do
+        pcall(function() c:Disconnect() end)
+    end
+    table.clear(shieldState.Links)
+end
+
+local function reEnableMonitor()
+    for _, c in ipairs(shieldState.DisabledConns) do
+        pcall(function() c:Enable() end)
+    end
+    table.clear(shieldState.DisabledConns)
+end
+
+local function findMonitors()
+    if type(getconnections) ~= "function" then return end
+    for _, sig in ipairs({RunService.Heartbeat, RunService.PreSimulation, RunService.PostSimulation}) do
+        local ok, list = pcall(getconnections, sig)
+        if ok and type(list) == "table" then
+            for _, conn in ipairs(list) do
+                local okF, fn = pcall(function() return conn.Function end)
+                if okF and type(fn) == "function" then
+                    local okN, name = pcall(debug.info, fn, "s")
+                    if okN and string.find(tostring(name), "UGI", 1, true) then
+                        local okE, en = pcall(function() return conn.Enabled end)
+                        if not okE or en ~= false then
+                            if pcall(function() conn:Disable() end) then
+                                table.insert(shieldState.DisabledConns, conn)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function disableMonitor()
+    findMonitors()
+end
+
+local function doSwap()
+    local char, hum = LP.Character, nil
+    if char then hum = char:FindFirstChildOfClass("Humanoid") end
+    if not hum or hum.Health <= 0 then return false end
+    if shieldState.Clone and shieldState.Clone.Parent == char then return true end
+    if not grounded(hum) then return false end
+
+    local clone = hum:Clone()
+    hum.Parent = nil
+    clone.Parent = char
+    Workspace.CurrentCamera.CameraSubject = clone
+    restorePlayerControls(clone)
+    pulseAnimate(char)
+
+    shieldState.Original = hum
+    shieldState.Clone = clone
+
+    table.insert(shieldState.Links, hum:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
+        if clone.Parent then clone.WalkSpeed = hum.WalkSpeed end
+    end))
+
+    local a1 = hum:FindFirstChildOfClass("Animator")
+    local a2 = clone:FindFirstChildOfClass("Animator")
+    if a1 and a2 then
+        table.insert(shieldState.Links, a1.AnimationPlayed:Connect(function(track)
+            local anim = track.Animation
+            if not anim or clone.Parent == nil then return end
+            local ok, loaded = pcall(function() return a2:LoadAnimation(anim) end)
+            if ok and loaded then
+                pcall(function()
+                    loaded.Priority = track.Priority
+                    loaded.Looped = track.Looped
+                    loaded:Play(0.05, math.max(track.WeightTarget, 0.01), track.Speed)
+                end)
+                local c
+                c = track.Stopped:Connect(function()
+                    c:Disconnect()
+                    pcall(function() loaded:Stop(0.1) end)
+                end)
+            end
+        end))
+    end
+
+    table.insert(shieldState.Links, clone.Died:Connect(function()
+        clearLinks()
+        local orig = shieldState.Original
+        local cl = shieldState.Clone
+        shieldState.Original = nil
+        shieldState.Clone = nil
+        local c2 = LP.Character
+        if c2 and orig and orig.Parent == nil then
+            orig.Parent = c2
+            Workspace.CurrentCamera.CameraSubject = orig
+            restorePlayerControls(orig)
+        end
+        if cl then pcall(function() cl:Destroy() end) end
+        if orig then orig.Health = 0 end
+    end))
+
+    return true
+end
+
+local function undoSwap()
+    clearLinks()
+    local char = LP.Character
+    local orig = shieldState.Original
+    local clone = shieldState.Clone
+    shieldState.Original = nil
+    shieldState.Clone = nil
+    if orig and clone and char and orig.Parent == nil and clone.Parent == char then
+        orig.Parent = char
+        Workspace.CurrentCamera.CameraSubject = orig
+        restorePlayerControls(orig)
+        pcall(function() clone:Destroy() end)
+        pulseAnimate(char)
+    end
+end
+
+local function useShield()
+    if shieldState.Active then return end
+    shieldState.Active = true
+
+    if shieldState.Method == "Humanoid Swap" or shieldState.Method == "Auto" then
+        if shieldState.CanSwap and doSwap() then
+            shieldState.Method = "Humanoid Swap"
+            return
+        end
+    end
+    if shieldState.Method == "Disable Monitor" or shieldState.Method == "Auto" then
+        shieldState.Method = "Disable Monitor"
+        disableMonitor()
+    end
+end
+
+local function releaseShield()
+    if not shieldState.Active then return end
+    shieldState.Active = false
+    undoSwap()
+    reEnableMonitor()
+    shieldState.Method = "Auto"
+end
+
+print("[K]vk - Parte 2 carregada")
+local Bypass = {}
+Bypass.Active = false
+Bypass.OriginalHumanoid = nil
+Bypass.CloneHumanoid = nil
+
+local PROPS_TO_COPY = {
+    "WalkSpeed","JumpPower","JumpHeight","AutoRotate","HipHeight",
+    "MaxHealth","Health","NameDisplayDistance","HealthDisplayDistance",
+    "DisplayDistanceType","RigType","UseJumpPower","PlatformStand",
+    "Sit","AutoJumpEnabled"
+}
+
+function Bypass.Apply(character)
+    if Bypass.Active or not character or not character.Parent then
+        return false
+    end
+
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return false end
+
+    local clone = humanoid:Clone()
+    clone.Name = humanoid.Name
+    clone.Parent = character
+
+    for _, property in ipairs(PROPS_TO_COPY) do
+        pcall(function()
+            clone[property] = humanoid[property]
+        end)
+    end
+
+    for name, value in pairs(humanoid:GetAttributes()) do
+        pcall(function()
+            clone:SetAttribute(name, value)
+        end)
+    end
+
+    local animator = humanoid:FindFirstChildOfClass("Animator")
+    if animator then animator.Parent = clone end
+
+    Bypass.OriginalHumanoid = humanoid
+    Bypass.CloneHumanoid = clone
+    Bypass.Active = true
+
+    pcall(function()
+        Workspace.CurrentCamera.CameraSubject = clone
+    end)
+
+    humanoid:Destroy()
+    return true
+end
+
+function Bypass.Disable()
+    Bypass.Active = false
+    Bypass.OriginalHumanoid = nil
+    Bypass.CloneHumanoid = nil
+
+    local character = LP.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if humanoid then
+        pcall(function()
+            Workspace.CurrentCamera.CameraSubject = humanoid
+        end)
+    end
+end
+
+local flyData = nil
+local flying = false
+
+local TEST_FEATURE_ENABLED = true
+local testActive = false
+local testConn = nil
+local testHeight = nil
+local IsTesting = false
+
+local function clearRagdoll()
+    pcall(function()
+        local n = tonumber(LP:GetAttribute("RagdollEndTime"))
+        if n and n > Workspace:GetServerTimeNow() then
+            LP:SetAttribute("RagdollEndTime", 0)
+        end
+    end)
+end
+
+local function unragdoll(hum, char)
+    clearRagdoll()
+    pcall(function()
+        hum.BreakJointsOnDeath = false
+        hum.RequiresNeck = false
+    end)
+    pcall(function()
+        local s = hum:GetState()
+        if s == Enum.HumanoidStateType.Physics
+        or s == Enum.HumanoidStateType.Ragdoll
+        or s == Enum.HumanoidStateType.FallingDown then
+            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end
+        if hum.PlatformStand then hum.PlatformStand = false end
+    end)
+    pcall(function()
+        hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.Physics, false)
+    end)
+    for _, d in ipairs(char:GetDescendants()) do
+        if d:IsA("BallSocketConstraint") then
+            pcall(function() d.Enabled = false end)
+        end
+    end
+end
+
+local function getActiveHumanoid()
+    local char = LP.Character
+    if not char then return nil end
+    return char:FindFirstChildOfClass("Humanoid")
+end
+
+local function stopTest()
+    if not testActive then return end
+    testActive = false
+    IsTesting = false
+    if testConn then
+        testConn:Disconnect()
+        testConn = nil
+    end
+    testHeight = nil
+end
+
+local function startTest()
+    if not TEST_FEATURE_ENABLED then return end
+    if testActive then return end
+    local char = LP.Character
+    if not char or not char.Parent then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    testHeight = hrp.Position.Y + 20
+    testActive = true
+    IsTesting = true
+
+    testConn = RunService.Heartbeat:Connect(function()
+        if not testActive or not TEST_FEATURE_ENABLED then return end
+        local c = LP.Character
+        if not c or not c.Parent then
+            stopTest()
+            return
+        end
+        local r = c:FindFirstChild("HumanoidRootPart")
+        if not r or not testHeight then return end
+
+        local pos = r.Position
+        pcall(function()
+            r.CFrame = CFrame.new(pos.X, testHeight, pos.Z) * CFrame.Angles(
+                r.CFrame:ToOrientation()
+            )
+            r.AssemblyLinearVelocity = Vector3.new(
+                r.AssemblyLinearVelocity.X, 0, r.AssemblyLinearVelocity.Z
+            )
+        end)
+    end)
+end
+
+local SCRIPT_START = nil
+do
+    local hrp, hum, char = root()
+    if hrp then
+        SCRIPT_START = hrp.CFrame
+    elseif char then
+        SCRIPT_START = char:GetPivot()
+    end
+end
+
+print("[K]vk - Parte 3 carregada")
+local function stopFly()
+    if flyData then
+        if flyData.Pre then flyData.Pre:Disconnect() end
+        if flyData.HB then flyData.HB:Disconnect() end
+        if flyData.CamConn then flyData.CamConn:Disconnect() end
+    end
+    flyData = nil
+    flying = false
+
+    releaseShield()
+    stopTest()
+
+    local char = LP.Character
+    local h = char and char:FindFirstChildOfClass("Humanoid")
+    if h then
+        pcall(function()
+            h:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+            h:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+            h:SetStateEnabled(Enum.HumanoidStateType.Physics, true)
+            h.BreakJointsOnDeath = true
+            h.RequiresNeck = true
+        end)
+    end
+
+    local hum = getActiveHumanoid()
+
+    if char then
+        for _, d in ipairs(char:GetDescendants()) do
+            if d:IsA("BasePart") then
+                pcall(function() d.CanCollide = true end)
+            end
+        end
+    end
+
+    if hum then
+        pcall(function()
+            hum.PlatformStand = false
+            hum.AutoRotate = true
+            hum.BreakJointsOnDeath = true
+            hum.RequiresNeck = true
+            hum:SetStateEnabled(Enum.HumanoidStateType.Dead, true)
+            hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+            hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+            hum:ChangeState(Enum.HumanoidStateType.Running)
+        end)
+        restorePlayerControls(hum)
+        pcall(function()
+            local cam = Workspace.CurrentCamera
+            if cam then
+                cam.CameraSubject = hum
+                cam.CameraType = Enum.CameraType.Custom
+            end
+        end)
+    end
+
+    if char then
+        pcall(function() pulseAnimate(char) end)
+    end
+
+    pcall(function()
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end
+    end)
+
+    task.delay(0.4, function()
+        local h2 = getActiveHumanoid()
+        if h2 then
+            pcall(function()
+                h2.PlatformStand = false
+                h2:ChangeState(Enum.HumanoidStateType.Running)
+            end)
+            restorePlayerControls(h2)
+        end
+    end)
+end
+
+function startFly(goal, doneFn)
+    if flying then stopFly() end
+    local hrp, hum, char = root()
+    if not hrp or not hum or not char then return false end
+
+    unragdoll(hum, char)
+    task.wait(0.15)
+
+    hrp, hum, char = root()
+    if not hrp or not hum then return false end
+
+    local origPlatform = hum.PlatformStand
+    local origAuto = hum.AutoRotate
+    local origBJD = hum.BreakJointsOnDeath
+    local origNeck = hum.RequiresNeck
+
+    pcall(function()
+        hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.Physics, true)
+        hum.BreakJointsOnDeath = false
+        hum.RequiresNeck = false
+        hum.PlatformStand = true
+        hum.AutoRotate = false
+        hum:UnequipTools()
+        hum:ChangeState(Enum.HumanoidStateType.Physics)
+    end)
+
+    useShield()
+    task.wait(0.1)
+
+    startTest()
+
+    local activeHum = getActiveHumanoid() or hum
+    local activeChar = LP.Character
+
+    pcall(function()
+        local cam = Workspace.CurrentCamera
+        if cam then
+            cam.CameraSubject = activeHum
+            cam.CameraType = Enum.CameraType.Custom
+        end
+    end)
+
+    for _, d in ipairs(activeChar:GetDescendants()) do
+        if d:IsA("BasePart") then
+            pcall(function() d.CanCollide = false end)
+        end
+    end
+
+    local position = hrp.Position
+    local rotation = hrp.CFrame.Rotation
+    local startChar = activeChar
+
+    flyData = {
+        Goal = goal,
+        Position = position,
+        Rotation = rotation,
+        Character = startChar,
+        Hum = activeHum,
+        OrigHum = hum,
+        OrigState = {
+            PlatformStand = origPlatform,
+            AutoRotate = origAuto,
+            BreakJointsOnDeath = origBJD,
+            RequiresNeck = origNeck,
+        },
+        Done = doneFn,
+        StallTime = 0,
+        StallPos = position,
+    }
+    flying = true
+
+    flyData.Pre = RunService.PreSimulation:Connect(function(dt)
+        local d = flyData
+        if not d then return end
+        local c = LP.Character
+        if c ~= d.Character or not c or not c.Parent then stopFly() return end
+        local cur = c:FindFirstChild("HumanoidRootPart")
+        local h = c:FindFirstChildOfClass("Humanoid")
+        if not cur or not h or h.Health <= 0 then stopFly() return end
+
+        if h.PlatformStand ~= true then
+            pcall(function()
+                h.PlatformStand = true
+                h:ChangeState(Enum.HumanoidStateType.Physics)
+            end)
+        end
+
+        local diff = d.Goal - d.Position
+        local mag = diff.Magnitude
+        if mag <= 3 then
+            local cb = d.Done
+            stopFly()
+            if cb then pcall(cb, true) end
+            return
+        end
+
+        local step = math.min(CFG.Speed * dt, mag)
+        d.Position = d.Position + diff.Unit * step
+
+        local look = d.Goal - d.Position
+        local flat = Vector3.new(look.X, 0, look.Z)
+        if flat.Magnitude > 0.05 then
+            d.Rotation = CFrame.lookAt(Vector3.zero, flat.Unit).Rotation
+        end
+
+        pcall(function()
+            cur.CFrame = CFrame.new(d.Position) * d.Rotation
+            cur.AssemblyLinearVelocity = Vector3.new(0, -Workspace.Gravity * 0.02, 0)
+            cur.AssemblyAngularVelocity = Vector3.zero
+        end)
+    end)
+
+    flyData.HB = RunService.Heartbeat:Connect(function(dt)
+        local d = flyData
+        if not d then return end
+        local c = LP.Character
+        if not c or c ~= d.Character then return end
+        local cur = c:FindFirstChild("HumanoidRootPart")
+        if not cur then return end
+
+        local diff = d.Position - cur.Position
+        if diff.Magnitude > 6 then
+            pcall(function()
+                cur.CFrame = CFrame.new(d.Position) * d.Rotation
+                cur.AssemblyLinearVelocity = Vector3.new(0, -Workspace.Gravity * 0.02, 0)
+                cur.AssemblyAngularVelocity = Vector3.zero
+            end)
+        end
+
+        if (cur.Position - d.StallPos).Magnitude < 1 then
+            d.StallTime = d.StallTime + dt
+            if d.StallTime > 1.2 then
+                pcall(function()
+                    local push = d.Goal - cur.Position
+                    if push.Magnitude > 0.1 then
+                        cur.CFrame = CFrame.new(cur.Position + push.Unit * 6) * d.Rotation
+                    end
+                end)
+                d.StallTime = 0
+            end
+        else
+            d.StallTime = 0
+        end
+        d.StallPos = cur.Position
+
+        local rem = tonumber(LP:GetAttribute("RagdollEndTime"))
+        if rem and rem > Workspace:GetServerTimeNow() then
+            LP:SetAttribute("RagdollEndTime", 0)
+            pcall(function()
+                local h = c:FindFirstChildOfClass("Humanoid")
+                if h then
+                    h:ChangeState(Enum.HumanoidStateType.Physics)
+                    h.PlatformStand = true
+                end
+            end)
+        end
+
+        if shieldState.Method == "Disable Monitor" then
+            if #shieldState.DisabledConns > 0 and math.random(1, 30) == 1 then
+                findMonitors()
+            end
+        end
+
+        if (cur.Position - d.Goal).Magnitude <= 3 then
+            local cb = d.Done
+            stopFly()
+            if cb then pcall(cb, true) end
+        end
+    end)
+
+    flyData.CamConn = RunService.RenderStepped:Connect(function()
+        local d = flyData
+        if not d then return end
+        local cam = Workspace.CurrentCamera
+        if not cam then return end
+        if cam.CameraType ~= Enum.CameraType.Custom then
+            cam.CameraType = Enum.CameraType.Custom
+        end
+        if cam.CameraSubject ~= d.Hum then
+            cam.CameraSubject = d.Hum
+        end
+    end)
+
+    return true
+end
+
+function tpTo(position)
+    local hrp, hum, char = root()
+    if not char or not position then return false end
+
+    if shieldState.Active then releaseShield() end
+
+    pcall(function()
+        hum.BreakJointsOnDeath = false
+        hum.RequiresNeck = false
+        hum.PlatformStand = true
+        hum:ChangeState(Enum.HumanoidStateType.Physics)
+    end)
+
+    useShield()
+    task.wait(0.08)
+
+    startTest()
+
+    local activeChar = LP.Character
+    if not activeChar then return false end
+
+    pcall(function()
+        activeChar:PivotTo(CFrame.new(position + Vector3.new(0, 3, 0)))
+    end)
+
+    task.wait(0.1)
+
+    releaseShield()
+    stopTest()
+
+    local h = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+    if h then
+        pcall(function()
+            h.PlatformStand = false
+            h:ChangeState(Enum.HumanoidStateType.Running)
+            h:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, true)
+            h:SetStateEnabled(Enum.HumanoidStateType.FallingDown, true)
+            h:SetStateEnabled(Enum.HumanoidStateType.Physics, true)
+            h.BreakJointsOnDeath = true
+            h.RequiresNeck = true
+        end)
+    end
+
+    return true
+end
+
+print("[K]vk - Parte 4 carregada")
+-- ============ EVENT TEST ============
+local EVENT_MODE = "Modo Original"
+local savedPromptPos = nil
+local savedPromptRot = nil
+local eventRunning = false
+local IsTeleporting = false
+
+local TeleportPoints = {
+    Vector3.new(500.62, 241.28, -366.64),
+    Vector3.new(504.45, 155.80, -366.35),
+    Vector3.new(508.30, 70.28, -366.03),
+    Vector3.new(513.86, 70.28, -366.25),
+    Vector3.new(519.43, 70.28, -366.47),
+    Vector3.new(524.32, 70.28, -366.59),
+    Vector3.new(529.22, 70.28, -366.71),
+    Vector3.new(538.01, 70.28, -365.55),
+    Vector3.new(546.80, 70.28, -364.40),
+}
+
+if CoreGui:FindFirstChild("GomesEvent") then CoreGui.GomesEvent:Destroy() end
+
+local gui = Instance.new("ScreenGui")
+gui.Name = "GomesEvent"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+pcall(function() gui.Parent = CoreGui end)
+if not gui.Parent then gui.Parent = LP:WaitForChild("PlayerGui") end
+
+local overlay = Instance.new("Frame")
+overlay.Size = UDim2.new(1, 0, 1, 0)
+overlay.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+overlay.BackgroundTransparency = 0.25
+overlay.Visible = false
+overlay.ZIndex = 100
+overlay.Parent = gui
+
+local overlayText = Instance.new("TextLabel")
+overlayText.Size = UDim2.new(1, 0, 0, 60)
+overlayText.Position = UDim2.new(0, 0, 0.5, -30)
+overlayText.BackgroundTransparency = 1
+overlayText.Text = "EVENT TEST..."
+overlayText.TextColor3 = Color3.fromRGB(255, 255, 255)
+overlayText.Font = Enum.Font.GothamBold
+overlayText.TextSize = 24
+overlayText.ZIndex = 101
+overlayText.Parent = overlay
+
+local function showOverlay(text)
+    overlayText.Text = text or "EVENT TEST..."
+    overlay.Visible = true
+end
+
+local function hideOverlay()
+    overlay.Visible = false
+end
+
+local panel = Instance.new("Frame")
+panel.Size = UDim2.new(0, 320, 0, 430)
+panel.Position = UDim2.new(0, 20, 0, 80)
+panel.BackgroundColor3 = BG
+panel.BackgroundTransparency = 0.06
+panel.BorderSizePixel = 0
+panel.Active = true
+panel.Parent = gui
+
+local pc = Instance.new("UICorner")
+pc.CornerRadius = UDim.new(0, 14)
+pc.Parent = panel
+
+local ps = Instance.new("UIStroke")
+ps.Color = ACCENT
+ps.Thickness = 1
+ps.Transparency = 0.5
+ps.Parent = panel
+
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 34)
+header.BackgroundColor3 = Color3.fromRGB(18, 24, 34)
+header.BackgroundTransparency = 0.1
+header.BorderSizePixel = 0
+header.Parent = panel
+local hc = Instance.new("UICorner")
+hc.CornerRadius = UDim.new(0, 14)
+hc.Parent = header
+local hmask = Instance.new("Frame")
+hmask.Size = UDim2.new(1, 0, 0, 14)
+hmask.Position = UDim2.new(0, 0, 1, -14)
+hmask.BackgroundColor3 = Color3.fromRGB(18, 24, 34)
+hmask.BackgroundTransparency = 0.1
+hmask.BorderSizePixel = 0
+hmask.Parent = header
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -80, 1, 0)
+title.Position = UDim2.new(0, 14, 0, 0)
+title.BackgroundTransparency = 1
+title.Text = "gomes event"
+title.TextColor3 = ACCENT2
+title.TextSize = 15
+title.Font = Enum.Font.GothamBold
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = header
+
+local counter = Instance.new("TextLabel")
+counter.Size = UDim2.new(0, 40, 1, 0)
+counter.Position = UDim2.new(1, -66, 0, 0)
+counter.BackgroundTransparency = 1
+counter.Text = "0"
+counter.TextColor3 = Color3.fromRGB(150, 170, 190)
+counter.TextSize = 12
+counter.Font = Enum.Font.Gotham
+counter.TextXAlignment = Enum.TextXAlignment.Right
+counter.Parent = header
+
+local close = Instance.new("TextButton")
+close.Size = UDim2.new(0, 24, 0, 24)
+close.Position = UDim2.new(1, -30, 0, 5)
+close.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+close.BorderSizePixel = 0
+close.Text = "X"
+close.TextColor3 = Color3.fromRGB(255, 255, 255)
+close.TextSize = 13
+close.Font = Enum.Font.GothamBold
+close.Parent = header
+local cc = Instance.new("UICorner")
+cc.CornerRadius = UDim.new(1, 0)
+cc.Parent = close
+
+local function makeBtn(text, y)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(1, -20, 0, 26)
+    b.Position = UDim2.new(0, 10, 0, y)
+    b.BackgroundColor3 = Color3.fromRGB(24, 30, 42)
+    b.BorderSizePixel = 0
+    b.Text = text
+    b.TextColor3 = Color3.fromRGB(230, 240, 250)
+    b.TextSize = 12
+    b.Font = Enum.Font.GothamMedium
+    b.AutoButtonColor = false
+    b.Parent = panel
+    local c = Instance.new("UICorner")
+    c.CornerRadius = UDim.new(0, 8)
+    c.Parent = b
+    local s = Instance.new("UIStroke")
+    s.Color = ACCENT
+    s.Thickness = 1
+    s.Transparency = 0.7
+    s.Parent = b
+    return b
+end
+
+local testFeatureBtn = makeBtn("TESTE: ON", 40)
+local eventModeBtn = makeBtn("Event: Modo Original", 70)
+local modeBtn = makeBtn("Ir: Voo", 100)
+
+local statusBar = Instance.new("TextLabel")
+statusBar.Size = UDim2.new(1, -20, 0, 16)
+statusBar.Position = UDim2.new(0, 10, 0, 132)
+statusBar.BackgroundTransparency = 1
+statusBar.Text = "Aguardando prompt"
+statusBar.TextColor3 = Color3.fromRGB(150, 170, 190)
+statusBar.TextSize = 11
+statusBar.Font = Enum.Font.Gotham
+statusBar.TextXAlignment = Enum.TextXAlignment.Left
+statusBar.Parent = panel
+
+local function setStatus(txt, col)
+    statusBar.Text = txt
+    statusBar.TextColor3 = col or Color3.fromRGB(150, 170, 190)
+end
+
+local scroll = Instance.new("ScrollingFrame")
+scroll.Size = UDim2.new(1, -20, 1, -170)
+scroll.Position = UDim2.new(0, 10, 0, 152)
+scroll.BackgroundTransparency = 1
+scroll.BorderSizePixel = 0
+scroll.ScrollBarThickness = 4
+scroll.ScrollBarImageColor3 = ACCENT
+scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+scroll.Parent = panel
+
+local grid = Instance.new("UIGridLayout")
+grid.CellSize = UDim2.new(1, 0, 0, 88)
+grid.CellPadding = UDim2.new(0, 0, 0, 6)
+grid.SortOrder = Enum.SortOrder.LayoutOrder
+grid.Parent = scroll
+
+local function updateCanvas()
+    scroll.CanvasSize = UDim2.new(0, 0, 0, grid.AbsoluteContentSize.Y + 10)
+end
+grid:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateCanvas)
+
+local CURRENT_MODE = "Voo"
+local SELECTED = nil
+local promptConn = nil
+local promptRadius = 4
+local promptCooldown = {}
+local PROMPT_COOLDOWN_TIME = 1
+
+local Assets = nil
+local EggState = nil
+local AskFieldEggSnapshot = nil
+
+task.spawn(function()
+    pcall(function()
+        Assets = require(ReplicatedStorage.Data.Assets)
+    end)
+end)
+
+task.spawn(function()
+    pcall(function()
+        EggState = require(ReplicatedStorage.Client.EggState)
+    end)
+end)
+
+task.spawn(function()
+    pcall(function()
+        local pkg = ReplicatedStorage:WaitForChild("Packages", 10)
+        local net = pkg and pkg:WaitForChild("Networking", 10)
+        AskFieldEggSnapshot = net and net:FindFirstChild("RF/EggWorld/AskFieldEggSnapshot")
+    end)
+end)
+
+local function formatMoney(n)
+    n = tonumber(n) or 0
+    if n >= 1e12 then
+        return string.format("%.2fT", n / 1e12)
+    elseif n >= 1e9 then
+        return string.format("%.2fB", n / 1e9)
+    elseif n >= 1e6 then
+        return string.format("%.2fM", n / 1e6)
+    elseif n >= 1e3 then
+        return string.format("%.1fK", n / 1e3)
+    end
+    return string.format("%.0f", n)
+end
+
+local function getAssetInfo(category)
+    if not Assets or type(Assets.Directory) ~= "table" then
+        return nil
+    end
+    local info = Assets.Directory[category]
+    if type(info) ~= "table" then return nil end
+
+    local name = info.DisplayName or category
+    local icon = info.Icon
+    local rate = tonumber(info.EarningRate) or 0
+    local rarity = nil
+    local rarityColor = Color3.fromRGB(255, 255, 255)
+    local rarityNum = 0
+
+    if type(info.Rarity) == "table" then
+        rarity = info.Rarity.DisplayName or info.Rarity._id or "Comum"
+        rarityNum = tonumber(info.Rarity.RarityNumber or info.Rarity.Rank) or 0
+        if typeof(info.Rarity.Color) == "Color3" then
+            rarityColor = info.Rarity.Color
+        end
+    else
+        rarity = "Comum"
+    end
+
+    if icon and tonumber(icon) then
+        icon = "rbxassetid://" .. tostring(icon)
+    end
+
+    return {
+        Name = tostring(name),
+        Icon = icon and tostring(icon) or nil,
+        Rate = rate,
+        Rarity = tostring(rarity),
+        RarityColor = rarityColor,
+        RarityNum = rarityNum,
+    }
+end
+
+local function getFieldEggs()
+    local records = nil
+
+    if EggState and type(EggState.ReadFieldEggs) == "function" then
+        local ok, res = pcall(EggState.ReadFieldEggs)
+        if ok and type(res) == "table" and type(res.Records) == "table" then
+            records = res.Records
+        end
+    end
+
+    if not records and AskFieldEggSnapshot and AskFieldEggSnapshot:IsA("RemoteFunction") then
+        local ok, res = pcall(AskFieldEggSnapshot.InvokeServer, AskFieldEggSnapshot)
+        if ok and type(res) == "table" and type(res.Records) == "table" then
+            records = res.Records
+        end
+    end
+
+    if type(records) ~= "table" then return {} end
+
+    local list = {}
+    for uid, rec in pairs(records) do
+        if type(rec) == "table" then
+            local state = rec.State
+            if state == "Slot" or state == "Dropped" then
+                local pos = nil
+                if typeof(rec.BottomCFrame) == "CFrame" then
+                    pos = rec.BottomCFrame.Position
+                end
+                if pos then
+                    local info = getAssetInfo(rec.AssetCategory)
+                    if info then
+                        list[#list + 1] = {
+                            Uid = tostring(uid),
+                            Category = rec.AssetCategory,
+                            Position = pos,
+                            Info = info,
+                        }
+                    end
+                end
+            end
+        end
+    end
+
+    table.sort(list, function(a, b)
+        return (a.Info.Rate or 0) > (b.Info.Rate or 0)
+    end)
+
+    return list
+end
+
+local function goTo(position, doneFn)
+    if CURRENT_MODE == "TP" then
+        local ok = tpTo(position)
+        if doneFn then pcall(doneFn, ok) end
+        return ok
+    end
+    return startFly(position, doneFn)
+end
+
+-- ============ EVENT RUNNERS ============
+local function runOriginalEvent()
+    if eventRunning or IsTeleporting then return end
+    eventRunning = true
+    IsTeleporting = true
+
+    setStatus("Event Original rodando", ACCENT2)
+    showOverlay("EVENT TEST...")
+
+    task.spawn(function()
+        local char = LP.Character
+        if not char or not char.Parent then
+            eventRunning = false
+            IsTeleporting = false
+            hideOverlay()
+            return
+        end
+
+        pcall(function() Bypass.Apply(char) end)
+
+        for _, position in ipairs(TeleportPoints) do
+            local c = LP.Character
+            if not c or not c.Parent then break end
+            pcall(function() c:PivotTo(CFrame.new(position)) end)
+            task.wait(0.08)
+        end
+
+        local c = LP.Character
+        if c and c.Parent and savedPromptPos then
+            local target = savedPromptRot
+                and (CFrame.new(savedPromptPos) * savedPromptRot)
+                or CFrame.new(savedPromptPos)
+            pcall(function() c:PivotTo(target) end)
+            task.wait(0.15)
+        end
+
+        hideOverlay()
+        IsTeleporting = false
+
+        if savedPromptPos then
+            startTest()
+            setStatus("Posicao 9 concluida - TEST ativo", ACCENT2)
+        else
+            setStatus("Sem posicao salva", Color3.fromRGB(255, 180, 80))
+        end
+
+        eventRunning = false
+    end)
+end
+
+local function runTPEvent()
+    if eventRunning or IsTeleporting then return end
+    eventRunning = true
+    IsTeleporting = true
+
+    setStatus("TP Event indo pra posicao inicial", ACCENT2)
+    showOverlay("TP EVENT...")
+
+    task.spawn(function()
+        local returnPos = savedPromptPos
+        local returnRot = savedPromptRot
+
+        if not returnPos then
+            setStatus("Sem posicao pra voltar", Color3.fromRGB(255, 180, 80))
+            hideOverlay()
+            eventRunning = false
+            IsTeleporting = false
+            return
+        end
+
+        local c = LP.Character
+        if c then pcall(function() Bypass.Apply(c) end) end
+
+        if SCRIPT_START then
+            local c2 = LP.Character
+            if c2 and c2.Parent then
+                pcall(function() c2:PivotTo(SCRIPT_START) end)
+            end
+            setStatus("TP Event esperando 2s", ACCENT2)
+            task.wait(2)
+        end
+
+        local c3 = LP.Character
+        if c3 and c3.Parent then
+            local target = returnRot
+                and (CFrame.new(returnPos) * returnRot)
+                or CFrame.new(returnPos)
+            pcall(function() c3:PivotTo(target) end)
+            task.wait(0.15)
+        end
+
+        hideOverlay()
+        IsTeleporting = false
+        setStatus("TP Event voltou pra posicao do prompt", ACCENT2)
+        eventRunning = false
+    end)
+end
+
+local function runEvent()
+    if EVENT_MODE == "Modo Original" then
+        runOriginalEvent()
+    else
+        runTPEvent()
+    end
+end
+
+-- ============ AUTO PROMPT ============
+local function findNearestPrompt(origin, radius)
+    local best, bestDist = nil, radius
+    for _, d in ipairs(workspace:GetDescendants()) do
+        if d:IsA("ProximityPrompt") and d.Enabled and d.Parent then
+            local cd = promptCooldown[d]
+            if not cd or os.clock() >= cd then
+                local part = d.Parent
+                if part:IsA("BasePart") then
+                    local dist = (part.Position - origin).Magnitude
+                    if dist < bestDist then
+                        best, bestDist = d, dist
+                    end
+                elseif part:IsA("Attachment") then
+                    local dist = (part.WorldPosition - origin).Magnitude
+                    if dist < bestDist then
+                        best, bestDist = d, dist
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function firePrompt(prompt)
+    promptCooldown[prompt] = os.clock() + PROMPT_COOLDOWN_TIME
+    task.spawn(function()
+        pcall(function() prompt.HoldDuration = 0 end)
+        if typeof(fireproximityprompt) == "function" then
+            pcall(fireproximityprompt, prompt)
+        end
+        pcall(function()
+            prompt:InputHoldBegin()
+            task.wait(0.05)
+            prompt:InputHoldEnd()
+        end)
+    end)
+end
+
+local function startPromptListener()
+    if promptConn then promptConn:Disconnect() promptConn = nil end
+    promptConn = RunService.Heartbeat:Connect(function()
+        if not SELECTED then return end
+        local prompt = findNearestPrompt(SELECTED.Position, promptRadius)
+        if prompt then
+            firePrompt(prompt)
+        end
+    end)
+end
+
+ProximityPromptService.PromptTriggered:Connect(function(prompt, player)
+    if player and player ~= LP then return end
+
+    local char = LP.Character
+    if not char or not char.Parent then return end
+
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        savedPromptPos = hrp.Position
+        savedPromptRot = hrp.CFrame.Rotation
+    else
+        local pivot = char:GetPivot()
+        savedPromptPos = pivot.Position
+        savedPromptRot = pivot.Rotation
+    end
+
+    runEvent()
+end)
+
+startPromptListener()
+
+testFeatureBtn.MouseButton1Click:Connect(function()
+    TEST_FEATURE_ENABLED = not TEST_FEATURE_ENABLED
+
+    if TEST_FEATURE_ENABLED then
+        testFeatureBtn.Text = "TESTE: ON"
+        testFeatureBtn.TextColor3 = ACCENT2
+        setStatus("Teste ativado", ACCENT2)
+    else
+        testFeatureBtn.Text = "TESTE: OFF"
+        testFeatureBtn.TextColor3 = Color3.fromRGB(255, 120, 120)
+        stopTest()
+        setStatus("Teste desativado", Color3.fromRGB(255, 120, 120))
+    end
+end)
+
+eventModeBtn.MouseButton1Click:Connect(function()
+    if EVENT_MODE == "Modo Original" then
+        EVENT_MODE = "TP Event"
+        eventModeBtn.Text = "Event: TP Event"
+    else
+        EVENT_MODE = "Modo Original"
+        eventModeBtn.Text = "Event: Modo Original"
+    end
+    setStatus("Event: " .. EVENT_MODE, ACCENT2)
+end)
+
+modeBtn.MouseButton1Click:Connect(function()
+    if CURRENT_MODE == "Voo" then
+        CURRENT_MODE = "TP"
+        modeBtn.Text = "Ir: TP"
+    else
+        CURRENT_MODE = "Voo"
+        modeBtn.Text = "Ir: Voo"
+    end
+end)
+
+-- ============ CARDS ============
+local cards = {}
+local cardStrokes = {}
+
+local function makeCard(entry)
+    local card = Instance.new("TextButton")
+    card.BackgroundColor3 = Color3.fromRGB(20, 26, 36)
+    card.BackgroundTransparency = 0.15
+    card.BorderSizePixel = 0
+    card.Text = ""
+    card.AutoButtonColor = false
+    card.Parent = scroll
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 10)
+    corner.Parent = card
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = entry.Info.RarityColor
+    stroke.Thickness = 1.5
+    stroke.Transparency = 0.3
+    stroke.Parent = card
+
+    local iconFrame = Instance.new("Frame")
+    iconFrame.Size = UDim2.new(0, 68, 0, 68)
+    iconFrame.Position = UDim2.new(0, 10, 0.5, -34)
+    iconFrame.BackgroundColor3 = Color3.fromRGB(12, 16, 24)
+    iconFrame.BackgroundTransparency = 0.2
+    iconFrame.BorderSizePixel = 0
+    iconFrame.Parent = card
+    local ifc = Instance.new("UICorner")
+    ifc.CornerRadius = UDim.new(0, 8)
+    ifc.Parent = iconFrame
+
+    if entry.Info.Icon then
+        local img = Instance.new("ImageLabel")
+        img.Size = UDim2.new(1, -8, 1, -8)
+        img.Position = UDim2.new(0, 4, 0, 4)
+        img.BackgroundTransparency = 1
+        img.Image = entry.Info.Icon
+        img.ScaleType = Enum.ScaleType.Fit
+        img.Parent = iconFrame
+    end
+
+    local nameLbl = Instance.new("TextLabel")
+    nameLbl.Size = UDim2.new(1, -92, 0, 18)
+    nameLbl.Position = UDim2.new(0, 88, 0, 12)
+    nameLbl.BackgroundTransparency = 1
+    nameLbl.Text = entry.Info.Name
+    nameLbl.TextColor3 = Color3.fromRGB(240, 245, 255)
+    nameLbl.TextSize = 13
+    nameLbl.Font = Enum.Font.GothamBold
+    nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+    nameLbl.TextTruncate = Enum.TextTruncate.AtEnd
+    nameLbl.Parent = card
+
+    local rateLbl = Instance.new("TextLabel")
+    rateLbl.Size = UDim2.new(1, -92, 0, 18)
+    rateLbl.Position = UDim2.new(0, 88, 0, 34)
+    rateLbl.BackgroundTransparency = 1
+    rateLbl.Text = "$" .. formatMoney(entry.Info.Rate) .. "/s"
+    rateLbl.TextColor3 = Color3.fromRGB(80, 255, 140)
+    rateLbl.TextSize = 14
+    rateLbl.Font = Enum.Font.GothamBold
+    rateLbl.TextXAlignment = Enum.TextXAlignment.Left
+    rateLbl.Parent = card
+
+    local rarityLbl = Instance.new("TextLabel")
+    rarityLbl.Size = UDim2.new(1, -92, 0, 14)
+    rarityLbl.Position = UDim2.new(0, 88, 0, 56)
+    rarityLbl.BackgroundTransparency = 1
+    rarityLbl.Text = string.upper(entry.Info.Rarity)
+    rarityLbl.TextColor3 = entry.Info.RarityColor
+    rarityLbl.TextSize = 11
+    rarityLbl.Font = Enum.Font.GothamBold
+    rarityLbl.TextXAlignment = Enum.TextXAlignment.Left
+    rarityLbl.TextTruncate = Enum.TextTruncate.AtEnd
+    rarityLbl.Parent = card
+
+    cardStrokes[card] = stroke
+
+    card.MouseButton1Click:Connect(function()
+        if not entry.Position then return end
+
+        SELECTED = entry
+
+        for c, s in pairs(cardStrokes) do
+            if c == card then
+                s.Color = ACCENT
+                s.Thickness = 2.5
+                s.Transparency = 0
+            else
+                s.Thickness = 1.5
+                s.Transparency = 0.3
+            end
+        end
+
+        local modeTxt = CURRENT_MODE == "TP" and "TP" or "voando"
+        setStatus("Indo ate " .. entry.Info.Name .. " (" .. modeTxt .. ")", ACCENT2)
+
+        task.spawn(function()
+            local ok = goTo(entry.Position, function(success)
+                if success then
+                    setStatus("Chegou em " .. entry.Info.Name, ACCENT2)
+                else
+                    setStatus("Falhou ao ir", Color3.fromRGB(255, 120, 120))
+                end
+            end)
+            if not ok then
+                setStatus("Nao foi possivel ir", Color3.fromRGB(255, 120, 120))
+            end
+        end)
+    end)
+
+    card.MouseEnter:Connect(function()
+        if SELECTED ~= entry then
+            stroke.Transparency = 0
+        end
+    end)
+    card.MouseLeave:Connect(function()
+        if SELECTED ~= entry then
+            stroke.Transparency = 0.3
+        end
+    end)
+
+    return card
+end
+
+local function clearCards()
+    for _, c in ipairs(cards) do
+        pcall(function() c:Destroy() end)
+    end
+    table.clear(cards)
+    table.clear(cardStrokes)
+end
+
+local function render()
+    local eggs = getFieldEggs()
+    counter.Text = tostring(#eggs)
+
+    if #eggs == 0 then
+        setStatus("Event " .. EVENT_MODE .. " - sem ovos", Color3.fromRGB(255, 180, 80))
+        clearCards()
+        updateCanvas()
+        return
+    end
+
+    setStatus("Event " .. EVENT_MODE .. " - " .. #eggs .. " ovos", ACCENT2)
+
+    local prevSelectedUid = SELECTED and SELECTED.Uid
+    clearCards()
+
+    for i, entry in ipairs(eggs) do
+        local card = makeCard(entry)
+        card.LayoutOrder = i
+        cards[i] = card
+
+        if entry.Uid == prevSelectedUid then
+            SELECTED = entry
+            local stroke = cardStrokes[card]
+            if stroke then
+                stroke.Color = ACCENT
+                stroke.Thickness = 2.5
+                stroke.Transparency = 0
+            end
+        end
+    end
+
+    updateCanvas()
+end
+
+render()
+
+task.spawn(function()
+    while true do
+        task.wait(3)
+        pcall(render)
+    end
+end)
+
+-- ============ DRAG ============
+local dragging, dragStart, startPos
+header.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1
+    or i.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = i.Position
+        startPos = panel.Position
+    end
+end)
+UserInputService.InputChanged:Connect(function(i)
+    if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement
+    or i.UserInputType == Enum.UserInputType.Touch) then
+        local d = i.Position - dragStart
+        panel.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + d.X,
+            startPos.Y.Scale, startPos.Y.Offset + d.Y
+        )
+    end
+end)
+UserInputService.InputEnded:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1
+    or i.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+
+close.MouseButton1Click:Connect(function()
+    if promptConn then promptConn:Disconnect() end
+    stopTest()
+    stopFly()
+    hideOverlay()
+    gui:Destroy()
+end)
+
+LP.CharacterRemoving:Connect(function()
+    stopTest()
+    stopFly()
+end)
+
+-- anti-ragdoll watchdog
+task.spawn(function()
+    while true do
+        task.wait(0.5)
+        local char = LP.Character
+        if char then
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            if hum and hum.Health > 0 then
+                pcall(function()
+                    hum.BreakJointsOnDeath = false
+                    hum.RequiresNeck = false
+                end)
+                local rem = tonumber(LP:GetAttribute("RagdollEndTime"))
+                if rem and rem > Workspace:GetServerTimeNow() then
+                    LP:SetAttribute("RagdollEndTime", 0)
+                    pcall(function()
+                        local s = hum:GetState()
+                        if s == Enum.HumanoidStateType.Physics
+                        or s == Enum.HumanoidStateType.Ragdoll
+                        or s == Enum.HumanoidStateType.FallingDown then
+                            hum:ChangeState(Enum.HumanoidStateType.GettingUp)
+                        end
+                    end)
+                end
+                for _, d in ipairs(char:GetDescendants()) do
+                    if d:IsA("BallSocketConstraint") and d.Enabled then
+                        pcall(function() d.Enabled = false end)
+                    end
+                end
+            end
+        end
+    end
+end)
+
+print("[K]vk - Gomes Event carregado")
