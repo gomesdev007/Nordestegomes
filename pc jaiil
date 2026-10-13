@@ -1,0 +1,715 @@
+-- language: Luau, executor script, target: Roblox
+-- UI + Auto Steal com bypass completo: integrity spoof + hover pad + anti-ragdoll
+-- metodo Instant (teleport) | Normal (glide). filtro de raridade. config persiste.
+
+local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage= game:GetService("ReplicatedStorage")
+local LP               = Players.LocalPlayer
+
+local genv    = getgenv and getgenv() or _G
+local cFrameNew = CFrame.new
+local lookAt    = CFrame.lookAt
+
+-- ===== config =====
+local CFG = genv.SenaStealConfig or {
+    enabled  = false,
+    method   = "Normal",
+    rarities = {},
+    speed    = 600,
+}
+genv.SenaStealConfig = CFG
+
+local RARITY_LIST = {
+    "Common","Uncommon","Rare","Epic","Legendary",
+    "Mythic","Cosmic","Secret","Eternal","Divine",
+}
+
+-- ===== integrity spoof: keys + constants (portado do Sena V4) =====
+local MOVEMENT_KEY  = "__SenaV4StealAnEggMovementSpoof"
+local INTEGRITY_KEY = "__SenaV4StealAnEggIntegritySpoof"
+local VERSION       = 436
+local HEADROOM      = 1.35
+local CLAMP         = 0.15
+local PADDING       = 24
+local MIN_SPEED     = 200
+local MAX_SPEED     = 1000
+local FIELDS = {
+    "LastObservedSample","LastSample","LastGoodSample",
+    "LastGameplayTrustedSample","LastValidatedSample",
+    "LastValidatedGroundedSample","LastConfirmedGroundSample",
+    "CandidateGroundedSample",
+}
+
+-- ===== finder: acha a state table do anti-cheat =====
+local findCache = { busy=false, nextAt=0, misses=0, found=nil }
+
+local function walkForState(root, plr, hum, hrp, depth, seen)
+    if depth > 3 or type(root) ~= "table" or seen[root] then return nil end
+    seen[root] = true
+    if rawget(root,"Player") == plr
+    and rawget(root,"Character") == plr.Character
+    and rawget(root,"Humanoid") == hum
+    and rawget(root,"RootPart") == hrp
+    and type(rawget(root,"SampleHistory")) == "table"
+    and type(rawget(root,"Evidence")) == "table" then
+        return root
+    end
+    local n = 0
+    for _, v in pairs(root) do
+        n += 1
+        if n > 128 then break end
+        if type(v) == "table" then
+            local hit = walkForState(v, plr, hum, hrp, depth+1, seen)
+            if hit then return hit end
+        end
+    end
+    return nil
+end
+
+local function findStateNow(plr, hum, hrp)
+    -- 1) getcallbackvalue walk (preferido)
+    if type(getcallbackvalue) == "function"
+    and type(debug) == "table" and type(debug.getupvalue) == "function" then
+        local Signal = ReplicatedStorage:FindFirstChild("Packages")
+            and ReplicatedStorage.Packages:FindFirstChild("Signal")
+        if Signal then
+            local ok, sig = pcall(require, Signal)
+            if ok and type(sig) == "table" and type(sig.Invoked) == "function" then
+                local ok2, node = pcall(sig.Invoked, "ClientCharacter: GetDebugSnapshot")
+                if ok2 and node then
+                    local ok3, cb = pcall(getcallbackvalue, node, "OnInvoke")
+                    if ok3 and type(cb) == "function" then
+                        local ok4, info = pcall(debug.getinfo, cb)
+                        if ok4 then
+                            for i = 1, (info.nups or 0) do
+                                local ok5, upv = pcall(debug.getupvalue, cb, i)
+                                if ok5 and type(upv) == "table" then
+                                    local hit = walkForState(upv, plr, hum, hrp, 0, {})
+                                    if hit then return hit end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    -- 2) fallback getgc
+    if type(getgc) == "function" then
+        local ok, gc = pcall(getgc, true)
+        if ok and type(gc) == "table" then
+            for _, v in ipairs(gc) do
+                if type(v) == "table"
+                and rawget(v,"Player") == plr
+                and rawget(v,"Character") == plr.Character
+                and rawget(v,"Humanoid") == hum
+                and rawget(v,"RootPart") == hrp
+                and type(rawget(v,"SampleHistory")) == "table"
+                and type(rawget(v,"Evidence")) == "table" then
+                    return v
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function findStateThrottled(plr, hum, hrp)
+    local c = findCache
+    if type(c.found) == "table"
+    and rawget(c.found,"Player") == plr
+    and rawget(c.found,"Character") == plr.Character
+    and rawget(c.found,"Humanoid") == hum
+    and rawget(c.found,"RootPart") == hrp then
+        return c.found
+    end
+    if c.busy or os.clock() < c.nextAt then return nil end
+    c.busy = true
+    task.spawn(function()
+        task.wait()
+        local ok, res = pcall(findStateNow, plr, hum, hrp)
+        c.found  = ok and res or nil
+        c.misses = res and 0 or (c.misses + 1)
+        c.nextAt = os.clock() + (res and 0.2 or (c.misses >= 5 and 10 or 1))
+        c.busy   = false
+    end)
+    return nil
+end
+
+-- ===== apply integrity: reescreve todos os campos da state =====
+local function applyIntegrity(state, speed, travelVel)
+    if type(state) ~= "table" then return false end
+    local rp = rawget(state,"RootPart")
+    local cf = rp and rp.Parent and rp.CFrame or nil
+    local pos = cf and cf.Position or nil
+    local tv = typeof(travelVel) == "Vector3" and travelVel or Vector3.zero
+
+    local function write(t)
+        if type(t) ~= "table" then return end
+        rawset(t, "WalkSpeed", speed)
+        if cf then
+            rawset(t, "CFrame", cf)
+            rawset(t, "Position", pos)
+            rawset(t, "LinearVelocity", tv)
+            rawset(t, "AngularVelocity", Vector3.zero)
+        end
+    end
+
+    for _, f in ipairs(FIELDS) do write(rawget(state, f)) end
+
+    for _, v in pairs(rawget(state,"SampleHistory") or {}) do write(v) end
+    for _, v in pairs(rawget(state,"SafeGroundCheckpoints") or {}) do write(v) end
+
+    local ev = rawget(state,"Evidence")
+    if type(ev) == "table" then
+        ev.Speed = 0; ev.Teleport = 0; ev.Flight = 0
+    end
+
+    local imp = rawget(state,"ImpulseContext")
+    if type(imp) == "table" then
+        local maxHS = math.max(tonumber(imp.MaxHorizontalSpeed) or 0, speed)
+        local span  = math.max((tonumber(imp.ExpiresAt) or 0) - (tonumber(imp.StartedAt) or 0), CLAMP)
+        imp.MaxHorizontalSpeed = maxHS
+        if pos then imp.OriginPosition = pos end
+        imp.MaxHorizontalDistance = math.max(tonumber(imp.MaxHorizontalDistance) or 0, maxHS * span + PADDING * 2)
+        write(imp.PreMovementSafeSample)
+    end
+
+    if rawget(state,"CorrectionContext") == nil then
+        rawset(state, "FirstSuspiciousAt", nil)
+        if rawget(state,"ThreatLevel") == "Observing" then
+            rawset(state, "ThreatLevel", "Trusted")
+        end
+    end
+
+    return true
+end
+
+local function integrityBox()
+    local g = genv
+    local b = g[INTEGRITY_KEY]
+    if type(b) ~= "table" or b.Version ~= VERSION then
+        b = { Version=VERSION, Enabled=false, Humanoid=nil, RootPart=nil, State=nil, WalkSpeed=MAX_SPEED*HEADROOM, TravelVelocity=Vector3.zero, NextSearchAt=0 }
+        g[INTEGRITY_KEY] = b
+    end
+    return b
+end
+
+local function integrityEnable(hum, hrp, speed)
+    local b = integrityBox()
+    local now = os.clock()
+    local st  = b.State
+    local ok  = type(st) == "table"
+        and rawget(st,"Player") == LP
+        and rawget(st,"Character") == LP.Character
+        and rawget(st,"Humanoid") == hum
+        and rawget(st,"RootPart") == hrp
+
+    if not ok then
+        if now < (b.NextSearchAt or 0) then return false end
+        b.NextSearchAt = now + 0.2
+        st = findStateThrottled(LP, hum, hrp)
+        if not st then return false end
+        ok = rawget(st,"Humanoid") == hum and rawget(st,"RootPart") == hrp
+        if not ok then
+            b.Enabled=false; b.Humanoid=hum; b.RootPart=hrp; b.State=st
+            return false
+        end
+    end
+
+    b.NextSearchAt  = 0
+    b.Enabled       = true
+    b.Humanoid      = hum
+    b.RootPart      = hrp
+    b.State         = st
+    b.WalkSpeed     = math.clamp(speed * HEADROOM, MIN_SPEED, MAX_SPEED * HEADROOM)
+    b.TravelVelocity = Vector3.zero
+    applyIntegrity(st, b.WalkSpeed, b.TravelVelocity)
+    return true
+end
+
+local function integrityUpdate(hum, hrp, speed, travelVel)
+    local b = genv[INTEGRITY_KEY]
+    if type(b) ~= "table" or not b.Enabled or b.Humanoid ~= hum or b.RootPart ~= hrp then
+        return false
+    end
+    b.WalkSpeed = math.clamp(speed * HEADROOM, MIN_SPEED, MAX_SPEED * HEADROOM)
+    if typeof(travelVel) == "Vector3" then
+        b.TravelVelocity = travelVel
+    elseif typeof(b.TravelVelocity) ~= "Vector3" then
+        b.TravelVelocity = Vector3.zero
+    end
+    return applyIntegrity(b.State, b.WalkSpeed, b.TravelVelocity)
+end
+
+local function integrityDisable(hum)
+    local b = genv[INTEGRITY_KEY]
+    if type(b) ~= "table" then return end
+    if hum == nil or b.Humanoid == hum then
+        b.Enabled=false; b.Humanoid=nil; b.RootPart=nil; b.State=nil; b.TravelVelocity=nil; b.NextSearchAt=0
+    end
+end
+
+-- ===== hover pad =====
+local hoverPart, hoverConn, hoverPost, hoverOwnerId
+local HOVER_NAME = "__SenaStealHoverPad"
+
+local function feetOffset(hrp, hum)
+    if hum.RigType == Enum.HumanoidRigType.R15 then
+        return hrp.Size.Y * 0.5 + math.max(hum.HipHeight, 0.5)
+    end
+    return hrp.Size.Y * 0.5 + 2
+end
+
+local function purgeOrphanPads()
+    for _, c in ipairs(workspace:GetChildren()) do
+        if c.Name == HOVER_NAME and c ~= hoverPart then
+            pcall(function() c:Destroy() end)
+        end
+    end
+end
+
+local function syncHover(posOverride)
+    if not hoverPart or not hoverPart.Parent or hoverPart:GetAttribute("Owner") ~= hoverOwnerId then
+        return false
+    end
+    local char = LP.Character
+    local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+    local hum  = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return false end
+    local pos = typeof(posOverride) == "Vector3" and posOverride or hrp.Position
+    hoverPart.CFrame = cFrameNew(pos.X, pos.Y - feetOffset(hrp, hum) - 0.55, pos.Z)
+    return true
+end
+
+local function startHoverPad()
+    if not hoverPart or not hoverPart.Parent or hoverPart:GetAttribute("Owner") ~= hoverOwnerId then
+        purgeOrphanPads()
+        if hoverPart and hoverPart.Parent then pcall(function() hoverPart:Destroy() end) end
+        hoverOwnerId = tostring(LP.UserId) .. ":" .. tostring(math.random(1e6))
+        local p = Instance.new("Part")
+        p.Name = HOVER_NAME
+        p:SetAttribute("Owner", hoverOwnerId)
+        p.Anchored = true; p.CanCollide = true; p.CanQuery = true
+        p.CanTouch = false; p.CastShadow = false; p.Transparency = 1
+        p.Material = Enum.Material.SmoothPlastic
+        p.Size = Vector3.new(8, 1, 8)
+        hoverPart = p; p.Parent = workspace
+    end
+    syncHover()
+    if not hoverConn then
+        hoverConn = RunService.PreSimulation:Connect(function()
+            if not syncHover() then startHoverPad() end
+        end)
+    end
+    if not hoverPost then
+        hoverPost = RunService.PostSimulation:Connect(function() syncHover() end)
+    end
+end
+
+local function stopHoverPad()
+    if hoverConn then hoverConn:Disconnect(); hoverConn = nil end
+    if hoverPost then hoverPost:Disconnect(); hoverPost = nil end
+    if hoverPart then pcall(function() hoverPart:Destroy() end); hoverPart = nil end
+    purgeOrphanPads()
+end
+
+-- ===== anti-ragdoll =====
+local antiRagdollConn
+local function installAntiRagdoll()
+    if antiRagdollConn then return end
+    antiRagdollConn = RunService.Heartbeat:Connect(function()
+        if not CFG.enabled then return end
+        local char = LP.Character
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        if not hum then return end
+        if hum.PlatformStand or hum.Sit or hum:GetState() == Enum.HumanoidStateType.Ragdoll then
+            pcall(function()
+                hum.BreakJointsOnDeath = false
+                hum.RequiresNeck = false
+                hum:SetStateEnabled(Enum.HumanoidStateType.Dead, false)
+                hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+                hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+                hum.PlatformStand = false
+                hum.Sit = false
+                hum:ChangeState(Enum.HumanoidStateType.Running)
+            end)
+        end
+    end)
+end
+
+-- ===== movimento: teleport (Instant) / glide (Normal) =====
+local function teleportRoot(cf, speed)
+    local char = LP.Character
+    local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+    local hum  = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return false end
+
+    startHoverPad()
+    integrityEnable(hum, hrp, speed or CFG.speed)
+
+    pcall(function()
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+        hrp.CFrame = cf
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    end)
+    syncHover(cf.Position)
+    integrityUpdate(hum, hrp, speed or CFG.speed, Vector3.zero)
+    return true
+end
+
+local function glideRoot(cf, speed, abort)
+    local char = LP.Character
+    local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+    local hum  = char and char:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return false end
+
+    startHoverPad()
+    integrityEnable(hum, hrp, speed or CFG.speed)
+
+    local target  = cf.Position
+    local s       = math.clamp(speed or CFG.speed, MIN_SPEED, MAX_SPEED)
+    local tLimit  = os.clock() + math.clamp((target - hrp.Position).Magnitude / s * 1.6 + 6, 12, 90)
+
+    while os.clock() < tLimit do
+        if abort and abort() then return false end
+        if CFG.enabled == false then return false end
+
+        char = LP.Character
+        hrp  = char and char:FindFirstChild("HumanoidRootPart")
+        hum  = char and char:FindFirstChildOfClass("Humanoid")
+        if not hrp or not hum then return false end
+
+        local d    = target - hrp.Position
+        local dist = d.Magnitude
+        if dist <= 1 then
+            hrp.CFrame = cf
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+            syncHover(cf.Position)
+            integrityUpdate(hum, hrp, s, Vector3.zero)
+            return true
+        end
+
+        local dt   = math.max(math.min(RunService.Heartbeat:Wait(), 0.15), 0.00416666)
+        local step = math.min(s * dt, dist)
+        local newPos = hrp.Position + d.Unit * step
+
+        pcall(function()
+            hrp.CFrame = cFrameNew(newPos, newPos + d.Unit)
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end)
+        syncHover(newPos)
+
+        if not integrityUpdate(hum, hrp, s, d.Unit * s) then
+            integrityEnable(hum, hrp, s)
+            integrityUpdate(hum, hrp, s, d.Unit * s)
+        end
+    end
+    return false
+end
+
+-- ===== ===== ===== UI ===== ===== =====
+local T = {
+    bg=Color3.fromRGB(18,18,22), bgTrans=0.35,
+    stroke=Color3.fromRGB(255,255,255), strokeTr=0.88,
+    accent=Color3.fromRGB(26,147,250), accentOn=Color3.fromRGB(60,200,120),
+    text=Color3.fromRGB(235,236,245), textDim=Color3.fromRGB(150,152,168),
+    chipBg=Color3.fromRGB(30,30,38), chipOn=Color3.fromRGB(26,147,250),
+    switchOff=Color3.fromRGB(48,48,56),
+}
+
+local parent = LP:FindFirstChild("PlayerGui") or game:GetService("CoreGui")
+local old = parent:FindFirstChild("SenaStealUI"); if old then old:Destroy() end
+
+local gui = Instance.new("ScreenGui")
+gui.Name="SenaStealUI"; gui.ResetOnSpawn=false
+gui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
+gui.IgnoreGuiInset=true; gui.Parent=parent
+
+local win = Instance.new("Frame")
+win.Size=UDim2.fromOffset(340,0); win.AutomaticSize=Enum.AutomaticSize.Y
+win.Position=UDim2.new(0.5,-170,0.4,0)
+win.BackgroundColor3=T.bg; win.BackgroundTransparency=T.bgTrans
+win.BorderSizePixel=0; win.Active=true; win.Parent=gui
+
+local wc = Instance.new("UICorner"); wc.CornerRadius=UDim.new(0,12); wc.Parent=win
+local ws = Instance.new("UIStroke"); ws.Color=T.stroke; ws.Thickness=1; ws.Transparency=T.strokeTr; ws.Parent=win
+
+local list = Instance.new("UIListLayout"); list.SortOrder=Enum.SortOrder.LayoutOrder; list.Padding=UDim.new(0,8); list.Parent=win
+local pad = Instance.new("UIPadding")
+pad.PaddingTop=UDim.new(0,10); pad.PaddingBottom=UDim.new(0,12)
+pad.PaddingLeft=UDim.new(0,12); pad.PaddingRight=UDim.new(0,12); pad.Parent=win
+
+-- drag
+do
+    local dragging, dragStart, startPos
+    local function b(i) if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then dragging=true; dragStart=i.Position; startPos=win.Position end end
+    local function m(i) if dragging then local d=i.Position-dragStart; win.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y) end end
+    local function e(i) if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then dragging=false end end
+    win.InputBegan:Connect(b); UserInputService.InputChanged:Connect(m); UserInputService.InputEnded:Connect(e)
+end
+
+-- header
+local header = Instance.new("Frame"); header.Size=UDim2.new(1,0,0,28); header.BackgroundTransparency=1; header.LayoutOrder=1; header.Parent=win
+local title = Instance.new("TextLabel")
+title.Size=UDim2.new(1,-30,1,0); title.BackgroundTransparency=1; title.Font=Enum.Font.GothamBold
+title.TextSize=16; title.TextXAlignment=Enum.TextXAlignment.Left; title.TextColor3=T.text; title.Text="Sena Steal"; title.Parent=header
+
+local close = Instance.new("TextButton")
+close.Size=UDim2.fromOffset(24,24); close.Position=UDim2.new(1,-24,0.5,-12)
+close.BackgroundColor3=T.chipBg; close.AutoButtonColor=false; close.Font=Enum.Font.GothamBold
+close.TextSize=12; close.TextColor3=T.textDim; close.Text="X"; close.Parent=header
+local ccn = Instance.new("UICorner"); ccn.CornerRadius=UDim.new(0,6); ccn.Parent=close
+
+-- helper section label
+local function sec(txt, order)
+    local l = Instance.new("TextLabel")
+    l.Size=UDim2.new(1,0,0,16); l.BackgroundTransparency=1; l.Font=Enum.Font.GothamBold
+    l.TextSize=11; l.TextXAlignment=Enum.TextXAlignment.Left; l.TextColor3=T.textDim
+    l.Text=string.upper(txt); l.LayoutOrder=order; l.Parent=win
+    return l
+end
+
+-- toggle
+local row = Instance.new("Frame")
+row.Size=UDim2.new(1,0,0,44); row.BackgroundColor3=T.chipBg; row.BackgroundTransparency=0.15
+row.LayoutOrder=2; row.Parent=win
+local rc = Instance.new("UICorner"); rc.CornerRadius=UDim.new(0,10); rc.Parent=row
+local rs = Instance.new("UIStroke"); rs.Color=T.stroke; rs.Thickness=1; rs.Transparency=0.9; rs.Parent=row
+
+local rl = Instance.new("TextLabel")
+rl.Size=UDim2.new(1,-80,1,0); rl.Position=UDim2.fromOffset(14,0)
+rl.BackgroundTransparency=1; rl.Font=Enum.Font.GothamBold; rl.TextSize=14
+rl.TextXAlignment=Enum.TextXAlignment.Left; rl.TextColor3=T.text; rl.Text="Auto Steal"; rl.Parent=row
+
+local switch = Instance.new("TextButton")
+switch.Size=UDim2.fromOffset(48,24); switch.Position=UDim2.new(1,-62,0.5,-12)
+switch.BackgroundColor3=T.switchOff; switch.AutoButtonColor=false; switch.Text=""; switch.Parent=row
+local sc = Instance.new("UICorner"); sc.CornerRadius=UDim.new(1,0); sc.Parent=switch
+
+local knob = Instance.new("Frame")
+knob.Size=UDim2.fromOffset(18,18); knob.Position=UDim2.fromOffset(3,3)
+knob.BackgroundColor3=Color3.fromRGB(240,240,245); knob.BorderSizePixel=0; knob.Parent=switch
+local kc = Instance.new("UICorner"); kc.CornerRadius=UDim.new(1,0); kc.Parent=knob
+
+local function paintSwitch()
+    local on = CFG.enabled
+    switch.BackgroundColor3 = on and T.accentOn or T.switchOff
+    knob.Position = on and UDim2.fromOffset(27,3) or UDim2.fromOffset(3,3)
+end
+
+-- metodo
+sec("Método de Roubo", 3)
+local mrow = Instance.new("Frame"); mrow.Size=UDim2.new(1,0,0,32); mrow.BackgroundTransparency=1; mrow.LayoutOrder=4; mrow.Parent=win
+local ml = Instance.new("UIListLayout"); ml.FillDirection=Enum.FillDirection.Horizontal; ml.Padding=UDim.new(0,6); ml.Parent=mrow
+
+local methodBtns = {}
+local function makeMethod(name)
+    local b = Instance.new("TextButton")
+    b.Size=UDim2.new(0.5,-3,1,0); b.BackgroundColor3=T.chipBg; b.AutoButtonColor=false
+    b.Font=Enum.Font.GothamBold; b.TextSize=13; b.TextColor3=T.text; b.Text=name; b.Parent=mrow
+    local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,8); c.Parent=b
+    local s=Instance.new("UIStroke"); s.Color=T.stroke; s.Thickness=1; s.Transparency=0.9; s.Parent=b
+    methodBtns[name]=b
+    b.MouseButton1Click:Connect(function()
+        CFG.method = name
+        for k, btn in pairs(methodBtns) do
+            local on = k == name
+            btn.BackgroundColor3 = on and T.accent or T.chipBg
+            btn.TextColor3 = on and Color3.fromRGB(255,255,255) or T.text
+        end
+    end)
+end
+makeMethod("Instant"); makeMethod("Normal")
+
+-- raridades
+sec("Raridades (vazio = todas)", 5)
+local scroll = Instance.new("ScrollingFrame")
+scroll.Size=UDim2.new(1,0,0,132); scroll.BackgroundColor3=T.chipBg; scroll.BackgroundTransparency=0.4
+scroll.BorderSizePixel=0; scroll.ScrollBarThickness=3; scroll.ScrollBarImageColor3=T.accent
+scroll.CanvasSize=UDim2.new(0,0,0,0); scroll.AutomaticCanvasSize=Enum.AutomaticSize.Y
+scroll.LayoutOrder=6; scroll.Parent=win
+local scc = Instance.new("UICorner"); scc.CornerRadius=UDim.new(0,10); scc.Parent=scroll
+local scs = Instance.new("UIStroke"); scs.Color=T.stroke; scs.Thickness=1; scs.Transparency=0.9; scs.Parent=scroll
+
+local grid = Instance.new("UIGridLayout")
+grid.CellSize=UDim2.fromOffset(96,26); grid.CellPadding=UDim2.fromOffset(6,6)
+grid.SortOrder=Enum.SortOrder.LayoutOrder; grid.Parent=scroll
+local gp = Instance.new("UIPadding")
+gp.PaddingTop=UDim.new(0,6); gp.PaddingBottom=UDim.new(0,6)
+gp.PaddingLeft=UDim.new(0,6); gp.PaddingRight=UDim.new(0,6); gp.Parent=scroll
+
+local rarityBtns = {}
+local function paintRarity(name)
+    local b = rarityBtns[name]; if not b then return end
+    local on = CFG.rarities[name] == true
+    b.BackgroundColor3 = on and T.chipOn or T.chipBg
+    b.TextColor3 = on and Color3.fromRGB(255,255,255) or T.textDim
+end
+
+for i, name in ipairs(RARITY_LIST) do
+    local b = Instance.new("TextButton")
+    b.Size=UDim2.fromScale(1,1); b.BackgroundColor3=T.chipBg; b.AutoButtonColor=false
+    b.Font=Enum.Font.GothamBold; b.TextSize=12; b.TextColor3=T.textDim; b.Text=name
+    b.LayoutOrder=i; b.Parent=scroll
+    local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,6); c.Parent=b
+    rarityBtns[name]=b
+    b.MouseButton1Click:Connect(function()
+        CFG.rarities[name] = not CFG.rarities[name] or nil
+        paintRarity(name)
+    end)
+end
+
+local clearRow = Instance.new("Frame"); clearRow.Size=UDim2.new(1,0,0,26); clearRow.BackgroundTransparency=1; clearRow.LayoutOrder=7; clearRow.Parent=win
+local clearBtn = Instance.new("TextButton")
+clearBtn.Size=UDim2.fromOffset(100,26); clearBtn.BackgroundColor3=T.chipBg; clearBtn.AutoButtonColor=false
+clearBtn.Font=Enum.Font.GothamBold; clearBtn.TextSize=12; clearBtn.TextColor3=T.textDim; clearBtn.Text="Limpar"; clearBtn.Parent=clearRow
+local cbc=Instance.new("UICorner"); cbc.CornerRadius=UDim.new(0,6); cbc.Parent=clearBtn
+clearBtn.MouseButton1Click:Connect(function()
+    CFG.rarities = {}
+    for k in pairs(rarityBtns) do paintRarity(k) end
+end)
+
+paintSwitch()
+for k in pairs(rarityBtns) do paintRarity(k) end
+for k, btn in pairs(methodBtns) do
+    local on = k == CFG.method
+    btn.BackgroundColor3 = on and T.accent or T.chipBg
+    btn.TextColor3 = on and Color3.fromRGB(255,255,255) or T.text
+end
+
+-- ===== stealth loop com bypass =====
+local running = false
+local stealThread
+
+local function pickRarity(rec)
+    local ok, r = pcall(function()
+        local Assets = require(ReplicatedStorage.Data.Assets)
+        local cat = rec.AssetCategory
+        local d = cat and Assets.Directory[cat]
+        local rr = d and d.Rarity
+        return rr and (rr.DisplayName or rr._id) or nil
+    end)
+    return ok and r or nil
+end
+
+local function passes(rec)
+    local any = false
+    for _ in pairs(CFG.rarities) do any = true; break end
+    if not any then return true end
+    local n = pickRarity(rec)
+    if not n then return true end
+    return CFG.rarities[n] == true
+end
+
+local SAFE = CFrame.new(544.76, 71.5, -416.48)
+
+local function stealLoop()
+    local EggState = require(ReplicatedStorage.Client.EggState)
+    local Remotes  = require(ReplicatedStorage.Shared.Remotes)
+
+    while CFG.enabled do
+        local ok, snap = pcall(EggState.ReadFieldEggs)
+        if not ok or not snap or not snap.Records then task.wait(0.5); continue end
+
+        local target
+        for _, rec in ipairs(snap.Records) do
+            if (rec.State == "Slot" or rec.State == "Dropped")
+            and rec.BottomCFrame and passes(rec) then
+                target = rec; break
+            end
+        end
+        if not target then task.wait(0.4); continue end
+
+        local char = LP.Character
+        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        if not hrp or not hum then task.wait(0.3); continue end
+
+        local dest = CFrame.new(target.BottomCFrame.Position + Vector3.new(0,3,0))
+
+        if CFG.method == "Instant" then
+            teleportRoot(dest, CFG.speed)
+        else
+            glideRoot(dest, CFG.speed, function() return not CFG.enabled end)
+        end
+        if not CFG.enabled then break end
+        task.wait(0.1)
+
+        pcall(function()
+            Remotes.EggWorld.AskFieldEggCarry:InvokeServer({ Uid = target.Uid })
+        end)
+        task.wait(CFG.method == "Instant" and 0.4 or 1.0)
+        if not CFG.enabled then break end
+
+        local safeDest = SAFE * CFrame.new(0,3,0)
+        if CFG.method == "Instant" then
+            teleportRoot(safeDest, CFG.speed)
+        else
+            glideRoot(safeDest, CFG.speed, function() return not CFG.enabled end)
+        end
+        task.wait(0.3)
+    end
+end
+
+local function start()
+    if running then return end
+    running = true
+    CFG.enabled = true
+    paintSwitch()
+
+    -- liga bypass
+    installAntiRagdoll()
+    local char = LP.Character
+    local hum  = char and char:FindFirstChildOfClass("Humanoid")
+    local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+    if hum and hrp then
+        startHoverPad()
+        integrityEnable(hum, hrp, CFG.speed)
+    end
+
+    stealThread = task.spawn(function()
+        local ok, err = pcall(stealLoop)
+        running = false
+        CFG.enabled = false
+        paintSwitch()
+        -- desliga bypass
+        stopHoverPad()
+        integrityDisable()
+        if not ok then warn("[Sena Steal] " .. tostring(err)) end
+    end)
+end
+
+local function stop()
+    CFG.enabled = false
+    paintSwitch()
+    stopHoverPad()
+    integrityDisable()
+    if stealThread then pcall(task.cancel, stealThread); stealThread = nil end
+    running = false
+end
+
+switch.MouseButton1Click:Connect(function()
+    if CFG.enabled then stop() else start() end
+end)
+close.MouseButton1Click:Connect(function()
+    stop()
+    gui.Enabled = false
+end)
+
+-- reconnecta o spoof ao respawn
+LP.CharacterAdded:Connect(function()
+    task.wait(1)
+    if CFG.enabled then
+        local char = LP.Character
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+        if hum and hrp then startHoverPad(); integrityEnable(hum, hrp, CFG.speed) end
+    end
+end)
